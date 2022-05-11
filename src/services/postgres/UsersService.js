@@ -5,6 +5,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const InvariantError = require('../../exceptions/InvariantError');
 const NotFoundError = require('../../exceptions/NotFoundError');
+const AuthenticationError = require('../../exceptions/AuthenticationError');
 
 class UsersService {
   constructor() {
@@ -56,6 +57,65 @@ class UsersService {
     }
 
     return result.rows[0];
+  }
+
+  async verifyUserCredential(username, password) {
+    const query = {
+      text: 'SELECT id, password FROM users WHERE username = $1',
+      values: [username],
+    };
+    const result = await this._pool.query(query);
+
+    if (!result.rows.length) {
+      throw new AuthenticationError('Kredensial yang Anda berikan salah');
+    }
+
+    const { id, password: hashedPassword } = result.rows[0];
+
+    const match = await bcrypt.compare(password, hashedPassword);
+
+    if (!match) {
+      throw new AuthenticationError('Kredensial yang Anda berikan salah');
+    }
+
+    return id;
+  }
+
+  async putAuthenticationHandler(request, h) {
+    try {
+      this._validator.validatePutAuthenticationPayload(request.payload);
+ 
+      const { refreshToken } = request.payload;
+      await this._authenticationsService.verifyRefreshToken(refreshToken);
+      const { id } = this._tokenManager.verifyRefreshToken(refreshToken);
+ 
+      const accessToken = this._tokenManager.generateAccessToken({ id });
+      return {
+        status: 'success',
+        message: 'Access Token berhasil diperbarui',
+        data: {
+          accessToken,
+        },
+      };
+    } catch (error) {
+      if (error instanceof ClientError) {
+        const response = h.response({
+          status: 'fail',
+          message: error.message,
+        });
+        response.code(error.statusCode);
+        return response;
+      }
+ 
+      // Server ERROR!
+      const response = h.response({
+        status: 'error',
+        message: 'Maaf, terjadi kegagalan pada server kami.',
+      });
+      response.code(500);
+      console.error(error);
+      return response;
+    }
   }
 }
 
